@@ -8,16 +8,16 @@ from torch import Tensor, nn
 
 @dataclass
 class Flux2Params:
-    in_channels: int = 128
-    context_in_dim: int = 15360
-    hidden_size: int = 6144
-    num_heads: int = 48
-    depth: int = 8
-    depth_single_blocks: int = 48
-    axes_dim: list[int] = field(default_factory=lambda: [32, 32, 32, 32])
-    theta: int = 2000
-    mlp_ratio: float = 3.0
-    use_guidance_embed: bool = True
+    in_channels: int = 128  # 图像离散为tokens序列后的特征维度
+    context_in_dim: int = 15360  # 文本tokens序列后的特征维度
+    hidden_size: int = 6144  # 隐藏维度
+    num_heads: int = 48  # 注意力头的数量
+    depth: int = 8  # 双流块的深度
+    depth_single_blocks: int = 48  # 单流块的深度
+    axes_dim: list[int] = field(default_factory=lambda: [32, 32, 32, 32])  # 位置编码的维度，总和与in_channels相同
+    theta: int = 2000  # 位置编码的缩放因子
+    mlp_ratio: float = 3.0  # MLP的缩放因子
+    use_guidance_embed: bool = True  # 是否使用引导嵌入
 
 
 @dataclass
@@ -52,14 +52,14 @@ class Flux2(nn.Module):
     def __init__(self, params: Flux2Params):
         super().__init__()
 
-        self.in_channels = params.in_channels
+        self.in_channels = params.in_channels  # 输入维度和输出维度相同
         self.out_channels = params.in_channels
         if params.hidden_size % params.num_heads != 0:
             raise ValueError(
                 f"Hidden size {params.hidden_size} must be divisible by num_heads {params.num_heads}"
             )
-        pe_dim = params.hidden_size // params.num_heads
-        if sum(params.axes_dim) != pe_dim:
+        pe_dim = params.hidden_size // params.num_heads  # 位置编码的维度，等于每个注意力头的维度
+        if sum(params.axes_dim) != pe_dim:  # 各个轴的维度之和应该等于位置编码的维度数
             raise ValueError(f"Got {params.axes_dim} but expected positional dim {pe_dim}")
         self.hidden_size = params.hidden_size
         self.num_heads = params.num_heads
@@ -69,7 +69,7 @@ class Flux2(nn.Module):
         self.txt_in = nn.Linear(params.context_in_dim, self.hidden_size, bias=False)
 
         self.use_guidance_embed = params.use_guidance_embed
-        if self.use_guidance_embed:
+        if self.use_guidance_embed:  # 如果使用引导嵌入，则添加引导嵌入层
             self.guidance_in = MLPEmbedder(in_dim=256, hidden_dim=self.hidden_size, disable_bias=True)
 
         self.double_blocks = nn.ModuleList(
@@ -81,7 +81,7 @@ class Flux2(nn.Module):
                 )
                 for _ in range(params.depth)
             ]
-        )
+        )  # 双流块
 
         self.single_blocks = nn.ModuleList(
             [
@@ -92,7 +92,7 @@ class Flux2(nn.Module):
                 )
                 for _ in range(params.depth_single_blocks)
             ]
-        )
+        )  # 单流块
 
         self.double_stream_modulation_img = Modulation(
             self.hidden_size,
@@ -122,23 +122,24 @@ class Flux2(nn.Module):
     ):
         num_txt_tokens = ctx.shape[1]
 
-        timestep_emb = timestep_embedding(timesteps, 256)
-        vec = self.time_in(timestep_emb)
-        if self.use_guidance_embed:
-            guidance_emb = timestep_embedding(guidance, 256)
-            vec = vec + self.guidance_in(guidance_emb)
+        timestep_emb = timestep_embedding(timesteps, 256)  # 构建时间步嵌入
+        vec = self.time_in(timestep_emb)  # 将时间步嵌入映射到隐藏维度
+        if self.use_guidance_embed:  # 如果使用引导嵌入，则添加引导嵌入层
+            guidance_emb = timestep_embedding(guidance, 256)  # 构建引导嵌入
+            vec = vec + self.guidance_in(guidance_emb)  # 将引导嵌入添加到vec
 
+        # 基于vec构建双流和单流的调制项
         double_block_mod_img = self.double_stream_modulation_img(vec)
         double_block_mod_txt = self.double_stream_modulation_txt(vec)
         single_block_mod, _ = self.single_stream_modulation(vec)
 
-        img = self.img_in(x)
-        txt = self.txt_in(ctx)
+        img = self.img_in(x)  # 将输入图像映射到隐藏维度
+        txt = self.txt_in(ctx)  # 将输入文本映射到隐藏维度
 
         pe_x = self.pe_embedder(x_ids)
         pe_ctx = self.pe_embedder(ctx_ids)
 
-        for block in self.double_blocks:
+        for block in self.double_blocks:  # 进行双流块的处理
             img, txt = block(
                 img,
                 txt,
@@ -148,19 +149,19 @@ class Flux2(nn.Module):
                 double_block_mod_txt,
             )
 
-        img = torch.cat((txt, img), dim=1)
-        pe = torch.cat((pe_ctx, pe_x), dim=2)
+        img = torch.cat((txt, img), dim=1)  # 将文本和图像拼接在一起
+        pe = torch.cat((pe_ctx, pe_x), dim=2)  # 将文本和图像的位置编码拼接在一起
 
-        for i, block in enumerate(self.single_blocks):
+        for i, block in enumerate(self.single_blocks):  # 进行单流块的处理
             img = block(
                 img,
                 pe,
                 single_block_mod,
             )
 
-        img = img[:, num_txt_tokens:, ...]
+        img = img[:, num_txt_tokens:, ...]  # 因为文本和图像拼接在一起，所以最终图片部分在后面
 
-        img = self.final_layer(img, vec)
+        img = self.final_layer(img, vec)  # 进行最终的输出
         return img
 
 
@@ -173,7 +174,7 @@ class SelfAttention(nn.Module):
         super().__init__()
         self.num_heads = num_heads
         head_dim = dim // num_heads
-        self.qkv = nn.Linear(dim, dim * 3, bias=False)
+        self.qkv = nn.Linear(dim, dim * 3, bias=False)  # 输出维度乘3是因为输出为qkv拼接
 
         self.norm = QKNorm(head_dim)
         self.proj = nn.Linear(dim, dim, bias=False)
@@ -216,10 +217,10 @@ class LastLayer(nn.Module):
         self.adaLN_modulation = nn.Sequential(nn.SiLU(), nn.Linear(hidden_size, 2 * hidden_size, bias=False))
 
     def forward(self, x: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
-        mod = self.adaLN_modulation(vec)
+        mod = self.adaLN_modulation(vec)  # 基于条件向量获调制项输出
         shift, scale = mod.chunk(2, dim=-1)
-        if shift.ndim == 2:
-            shift = shift[:, None, :]
+        if shift.ndim == 2:  # 如果维度为2，则添加一个维度
+            shift = shift[:, None, :]  # 在第1维上插入一个大小为1的新维度
             scale = scale[:, None, :]
         x = (1 + scale) * self.norm_final(x) + shift
         x = self.linear(x)
@@ -246,7 +247,7 @@ class SingleStreamBlock(nn.Module):
             hidden_size,
             hidden_size * 3 + self.mlp_hidden_dim * self.mlp_mult_factor,
             bias=False,
-        )
+        )  # 与Flux.1 dev中保持一致，直接映射出qkv和mlp
 
         self.linear2 = nn.Linear(hidden_size + self.mlp_hidden_dim, hidden_size, bias=False)
 
@@ -275,11 +276,11 @@ class SingleStreamBlock(nn.Module):
         q, k, v = rearrange(qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
         q, k = self.norm(q, k, v)
 
-        attn = attention(q, k, v, pe)
+        attn = attention(q, k, v, pe)  # 进行带有位置编码的注意力计算
 
         # compute activation in mlp stream, cat again and run second linear layer
         output = self.linear2(torch.cat((attn, self.mlp_act(mlp)), 2))
-        return x + mod_gate * output
+        return x + mod_gate * output  # 进行残差连接和门控激活
 
 
 class DoubleStreamBlock(nn.Module):
@@ -348,6 +349,7 @@ class DoubleStreamBlock(nn.Module):
         img_modulated = self.img_norm1(img)
         img_modulated = (1 + img_mod1_scale) * img_modulated + img_mod1_shift
 
+        # 进行图片分支的注意力计算
         img_qkv = self.img_attn.qkv(img_modulated)
         img_q, img_k, img_v = rearrange(img_qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
         img_q, img_k = self.img_attn.norm(img_q, img_k, img_v)
@@ -356,25 +358,27 @@ class DoubleStreamBlock(nn.Module):
         txt_modulated = self.txt_norm1(txt)
         txt_modulated = (1 + txt_mod1_scale) * txt_modulated + txt_mod1_shift
 
+        # 进行文本分支的注意力计算
         txt_qkv = self.txt_attn.qkv(txt_modulated)
         txt_q, txt_k, txt_v = rearrange(txt_qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
         txt_q, txt_k = self.txt_attn.norm(txt_q, txt_k, txt_v)
 
+        # 将文本和图片的query、key、value拼接在一起
         q = torch.cat((txt_q, img_q), dim=2)
         k = torch.cat((txt_k, img_k), dim=2)
         v = torch.cat((txt_v, img_v), dim=2)
 
-        pe = torch.cat((pe_ctx, pe), dim=2)
-        attn = attention(q, k, v, pe)
-        txt_attn, img_attn = attn[:, : txt_q.shape[2]], attn[:, txt_q.shape[2] :]
+        pe = torch.cat((pe_ctx, pe), dim=2)  # 将作为条件的图片上下文为rope旋转矩阵，与当前图片的位置编码拼接在一起
+        attn = attention(q, k, v, pe)  # 进行带有位置编码的注意力计算
+        txt_attn, img_attn = attn[:, : txt_q.shape[2]], attn[:, txt_q.shape[2] :]  # 将注意力分数拆分为文本和图片两个部分
 
-        # calculate the img blocks
+        # calculate the img blocks  构建输入到下一个双流块的图像特征，包括残差连接和MLP层
         img = img + img_mod1_gate * self.img_attn.proj(img_attn)
         img = img + img_mod2_gate * self.img_mlp(
             (1 + img_mod2_scale) * (self.img_norm2(img)) + img_mod2_shift
         )
 
-        # calculate the txt blocks
+        # calculate the txt blocks  构建输入到下一个双流块的文本特征，包括残差连接和MLP层
         txt = txt + txt_mod1_gate * self.txt_attn.proj(txt_attn)
         txt = txt + txt_mod2_gate * self.txt_mlp(
             (1 + txt_mod2_scale) * (self.txt_norm2(txt)) + txt_mod2_shift
@@ -409,6 +413,7 @@ class EmbedND(nn.Module):
         return emb.unsqueeze(1)
 
 
+# 构建正弦时间步嵌入
 def timestep_embedding(t: Tensor, dim, max_period=10000, time_factor: float = 1000.0):
     """
     Create sinusoidal timestep embeddings.
@@ -418,17 +423,17 @@ def timestep_embedding(t: Tensor, dim, max_period=10000, time_factor: float = 10
     :param max_period: controls the minimum frequency of the embeddings.
     :return: an (N, D) Tensor of positional embeddings.
     """
-    t = time_factor * t
-    half = dim // 2
-    freqs = torch.exp(
-        -math.log(max_period) * torch.arange(start=0, end=half, device=t.device, dtype=torch.float32) / half
+    t = time_factor * t  # 时间缩放因子可以放大时间，让编码更精细
+    half = dim // 2  # sin、cos各占一半
+    freqs = torch.exp(-math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half).to(
+        t.device
     )
 
     args = t[:, None].float() * freqs[None]
     embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
-    if dim % 2:
+    if dim % 2:  # 如果维度不是2的倍数，补充一个零向量
         embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
-    if torch.is_floating_point(t):
+    if torch.is_floating_point(t):  # 如果t是浮点数，则将embedding转换为t的类型
         embedding = embedding.to(t)
     return embedding
 
@@ -445,7 +450,7 @@ class RMSNorm(torch.nn.Module):
         return (x * rrms).to(dtype=x_dtype) * self.scale
 
 
-class QKNorm(torch.nn.Module):
+class QKNorm(torch.nn.Module):  # 用于对query和key进行归一化
     def __init__(self, dim: int):
         super().__init__()
         self.query_norm = RMSNorm(dim)
@@ -458,27 +463,37 @@ class QKNorm(torch.nn.Module):
 
 
 def attention(q: Tensor, k: Tensor, v: Tensor, pe: Tensor) -> Tensor:
-    q, k = apply_rope(q, k, pe)
+    """
+    注意力机制
+    q: query张量 [batch, heads, seq_len, head_dim]
+    k: key张量 [batch, heads, seq_len, head_dim]
+    v: value张量 [batch, heads, seq_len, head_dim]
+    pe: 位置编码张量 [batch, 1, dim, 2, 2]
+    """
+    q, k = apply_rope(q, k, pe)  # 将预计算的rope旋转矩阵应用于q，k
 
-    x = torch.nn.functional.scaled_dot_product_attention(q, k, v)
-    x = rearrange(x, "B H L D -> B L (H D)")
+    x = torch.nn.functional.scaled_dot_product_attention(q, k, v)  # 计算注意力
+    x = rearrange(x, "B H L D -> B L (H D)")  # 将多头注意力组合回整体
 
-    return x
+    return x  # [batch, seq_len, heads*head_dim]
 
 
-def rope(pos: Tensor, dim: int, theta: int) -> Tensor:
+def rope(pos: Tensor, dim: int, theta: int) -> Tensor:  # pos的shape为[batch, seq_len]
     assert dim % 2 == 0
+    # 计算每个位置的频率缩放因子；先生成序列 [0, 2, 4, ..., dim-2]，然后除以 dim，得到得到 [0, 2/dim, 4/dim, ..., (dim-2)/dim]
     scale = torch.arange(0, dim, 2, dtype=pos.dtype, device=pos.device) / dim
-    omega = 1.0 / (theta**scale)
-    out = torch.einsum("...n,d->...nd", pos, omega)
-    out = torch.stack([torch.cos(out), -torch.sin(out), torch.sin(out), torch.cos(out)], dim=-1)
-    out = rearrange(out, "b n d (i j) -> b n d i j", i=2, j=2)
+    omega = 1.0 / (theta**scale)  # 计算最终的角频率  ω_i = 1/θ^(2i/dim)
+    out = torch.einsum("...n,d->...nd", pos, omega)  # Einstein 求和约定计算位置和频率的外积，shape: [batch, seq_len, dim//2]
+    out = torch.stack([torch.cos(out), -torch.sin(out), torch.sin(out), torch.cos(out)], dim=-1)  # 构建旋转矩阵，shape: [batch, seq_len, dim//2, 4]
+    out = rearrange(out, "b n d (i j) -> b n d i j", i=2, j=2)  # 重排列成矩阵形式，将最后一个维度4拆分成2*2，shape: [batch, seq_len, dim//2, 2, 2]
     return out.float()
 
 
 def apply_rope(xq: Tensor, xk: Tensor, freqs_cis: Tensor) -> tuple[Tensor, Tensor]:
+    # 输入的q、k张量的最后一维拆分为两个维度，相当于构建复数形式；[batch, heads, seq_len, head_dim] --> [batch, heads, seq_len, head_dim//2, 1, 2]，新增加的维度1是为了广播计算添加
     xq_ = xq.float().reshape(*xq.shape[:-1], -1, 1, 2)
     xk_ = xk.float().reshape(*xk.shape[:-1], -1, 1, 2)
+    # 进行旋转变换；freqs_cis[..., 0]、freqs_cis[..., 1]是一个行数为2的列向量，xq_[..., 0]、xq_[..., 1]、xk_[..., 0]、xk_[..., 1]是一个列数为2的行向量
     xq_out = freqs_cis[..., 0] * xq_[..., 0] + freqs_cis[..., 1] * xq_[..., 1]
     xk_out = freqs_cis[..., 0] * xk_[..., 0] + freqs_cis[..., 1] * xk_[..., 1]
-    return xq_out.reshape(*xq.shape).type_as(xq), xk_out.reshape(*xk.shape).type_as(xk)
+    return xq_out.reshape(*xq.shape).type_as(xq), xk_out.reshape(*xk.shape).type_as(xk)  # 将结果重排列回原来的形状
