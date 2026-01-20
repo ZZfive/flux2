@@ -14,22 +14,23 @@ from transformers import (
 
 from .sampling import cap_pixels, concatenate_images
 from .system_messages import (
-    PROMPT_IMAGE_INTEGRITY,
-    PROMPT_IMAGE_INTEGRITY_FOLLOW_UP,
-    PROMPT_TEXT_INTEGRITY,
-    SYSTEM_MESSAGE,
-    SYSTEM_MESSAGE_UPSAMPLING_I2I,
-    SYSTEM_MESSAGE_UPSAMPLING_T2I,
-    SYSTEM_PROMPT_CONTENT_FILTER,
+    PROMPT_IMAGE_INTEGRITY,  # 检查图像版权问题的提示词
+    PROMPT_IMAGE_INTEGRITY_FOLLOW_UP,  # 检查图像版权问题的后续提示词
+    PROMPT_TEXT_INTEGRITY,  # 检查文本版权问题的提示词
+    SYSTEM_MESSAGE,  # 系统提示词
+    SYSTEM_MESSAGE_UPSAMPLING_I2I,  # 图生图时的系统提示词
+    SYSTEM_MESSAGE_UPSAMPLING_T2I,  # 文生图时的系统提示词
+    SYSTEM_PROMPT_CONTENT_FILTER,  # 内容过滤系统的系统提示词
 )
 
-OUTPUT_LAYERS_MISTRAL = [10, 20, 30]
-OUTPUT_LAYERS_QWEN3 = [9, 18, 27]
+OUTPUT_LAYERS_MISTRAL = [10, 20, 30]  # MISTRAL作为文本编码器时是使用的输出层索引
+OUTPUT_LAYERS_QWEN3 = [9, 18, 27]  # QWEN3作为文本编码器时是使用的输出层索引
 MAX_LENGTH = 512
-NSFW_THRESHOLD = 0.85
-UPSAMPLING_MAX_IMAGE_SIZE = 768**2
+NSFW_THRESHOLD = 0.85  # NSFW图像识别的阈值
+UPSAMPLING_MAX_IMAGE_SIZE = 768**2  # 参考图片允许的最大像素数，超过后会进行缩放
 
 
+# Flux.2 dev使用Mistral Small 3作为文本编码器
 class Mistral3SmallEmbedder(nn.Module):
     def __init__(
         self,
@@ -66,13 +67,13 @@ class Mistral3SmallEmbedder(nn.Module):
             img = [[im] for im in img]
 
         # potentially concatenate multiple images to reduce the size
-        img = [[concatenate_images(img_i)] if len(img_i) > 1 else img_i for img_i in img]
+        img = [[concatenate_images(img_i)] if len(img_i) > 1 else img_i for img_i in img]  # 将多张图像水平拼接，并居中对齐
 
         # cap the pixels
-        img = [[cap_pixels(img_i, self.upsampling_max_image_size) for img_i in img_i] for img_i in img]
+        img = [[cap_pixels(img_i, self.upsampling_max_image_size) for img_i in img_i] for img_i in img]  # 裁剪图像，使其像素数不超过 k
         return img
 
-    def format_input(
+    def format_input(  # 将文本和图像转换为符合VLM模型要求的输入格式
         self,
         txt: list[str],
         system_message: str = SYSTEM_MESSAGE,
@@ -140,7 +141,7 @@ class Mistral3SmallEmbedder(nn.Module):
             return messages
 
     @torch.no_grad()
-    def upsample_prompt(
+    def upsample_prompt(  # 基于预设的系统提示词，对输入的提示词进行优化
         self,
         txt: list[str],
         img: list[Image.Image] | list[list[Image.Image]] | None = None,
@@ -158,17 +159,17 @@ class Mistral3SmallEmbedder(nn.Module):
         """
         # Set system message based on whether images are provided
         if img is None or len(img) == 0 or img[0] is None:
-            system_message = SYSTEM_MESSAGE_UPSAMPLING_T2I
+            system_message = SYSTEM_MESSAGE_UPSAMPLING_T2I  # 文生图时的系统提示词
         else:
-            system_message = SYSTEM_MESSAGE_UPSAMPLING_I2I
+            system_message = SYSTEM_MESSAGE_UPSAMPLING_I2I  # 图生图时的系统提示词
 
         # Format input messages
         messages_batch = self.format_input(txt=txt, system_message=system_message, img=img)
 
         # Process all messages at once
-        # with image processing a too short max length can throw an error in here.
+        # with image processing a too short max length can throw an error in here. 图像处理时，如果最大长度太短，可能会抛出错误
         try:
-            inputs = self.processor.apply_chat_template(
+            inputs = self.processor.apply_chat_template(  # 应用chat模板，将文本和图像转换为符合VLM模型要求的输入格式
                 messages_batch,
                 add_generation_prompt=True,
                 tokenize=True,
@@ -208,7 +209,7 @@ class Mistral3SmallEmbedder(nn.Module):
 
             raw_txt = self.processor.tokenizer.batch_decode(
                 generated_tokens, skip_special_tokens=True, clean_up_tokenization_spaces=True
-            )
+            )  # 解码生成的tokens，去除特殊tokens，并清理空格
             return raw_txt
         except Exception as e:
             print(f"Error generating upsampled prompt: {e}, returning original prompt")
@@ -244,24 +245,27 @@ class Mistral3SmallEmbedder(nn.Module):
             use_cache=False,
         )
 
-        out = torch.stack([output.hidden_states[k] for k in OUTPUT_LAYERS_MISTRAL], dim=1)
-        return rearrange(out, "b c l d -> b l (c d)")
+        out = torch.stack([output.hidden_states[k] for k in OUTPUT_LAYERS_MISTRAL], dim=1)  # 将多个隐藏状态堆叠在一起
+        return rearrange(out, "b c l d -> b l (c d)")  # 将多个隐藏状态在通道维度上堆叠在一起
 
     def yes_no_logit_processor(
         self, input_ids: torch.LongTensor, scores: torch.FloatTensor
     ) -> torch.FloatTensor:
         """
-        Sets all tokens but yes/no to the minimum.
+        Sets all tokens but yes/no to the minimum.  可实现经过softmax后，只有 yes/no 两个token有实际概率，其他所有token概率趋近于0
         """
+        # 保存yes/no token 的原始 logits
         scores_yes_token = scores[:, self.yes_token].clone()
         scores_no_token = scores[:, self.no_token].clone()
+        # 将所有token的logits设置为最小值-1
         scores_min = scores.min()
         scores[:, :] = scores_min - 1
+        # 恢复yes/no token 的原始 logits
         scores[:, self.yes_token] = scores_yes_token
         scores[:, self.no_token] = scores_no_token
         return scores
 
-    def test_image(self, image: Image.Image | str | Path | torch.Tensor) -> bool:
+    def test_image(self, image: Image.Image | str | Path | torch.Tensor) -> bool:  # 检查图像是否包含版权问题
         if isinstance(image, torch.Tensor):
             image = rearrange(image[0].clamp(-1.0, 1.0), "c h w -> h w c")
             image = Image.fromarray((127.5 * (image + 1.0)).cpu().byte().numpy())
@@ -269,21 +273,21 @@ class Mistral3SmallEmbedder(nn.Module):
             image = Image.open(image)
 
         classification = next(c for c in self.nsfw_classifier(image) if c["label"] == "nsfw")
-        if classification["score"] > NSFW_THRESHOLD:
+        if classification["score"] > NSFW_THRESHOLD:  # 如果图像被识别为NSFW，则返回True
             return True
 
         # 512^2 pixels are enough for checking
         w, h = image.size
-        f = (512**2 / (w * h)) ** 0.5
-        image = image.resize((int(f * w), int(f * h)))
+        f = (512**2 / (w * h)) ** 0.5  # 计算缩放比例
+        image = image.resize((int(f * w), int(f * h)))  # 缩放图像
 
-        chat = [
+        chat = [  # 构建chat模板
             {
                 "role": "system",
                 "content": [
                     {
                         "type": "text",
-                        "text": SYSTEM_PROMPT_CONTENT_FILTER,
+                        "text": SYSTEM_PROMPT_CONTENT_FILTER,  # 内容过滤系统的系统提示词
                     },
                 ],
             },
@@ -317,14 +321,14 @@ class Mistral3SmallEmbedder(nn.Module):
 
         generate_ids = self.model.generate(
             **inputs,
-            max_new_tokens=1,
-            logits_processor=[self.yes_no_logit_processor],
-            do_sample=False,
+            max_new_tokens=1,  # 只生成一个token
+            logits_processor=[self.yes_no_logit_processor],  # 使用yes_no_logit_processor处理logits
+            do_sample=False,  # 不进行采样，即使用贪婪搜索，返回概率最高的token
         )
 
-        return generate_ids[0, -1].item() == self.yes_token
+        return generate_ids[0, -1].item() == self.yes_token  # 如果最后一个token是yes token，则返回True；否则返回False
 
-    def test_txt(self, txt: str) -> bool:
+    def test_txt(self, txt: str) -> bool:  # 检查文本是否包含版权问题
         chat = [
             {
                 "role": "system",
@@ -363,6 +367,7 @@ class Mistral3SmallEmbedder(nn.Module):
         return generate_ids[0, -1].item() == self.yes_token
 
 
+# Flux.2 klein使用Qwen3作为文本编码器
 class Qwen3Embedder(nn.Module):
     def __init__(
         self,
@@ -415,8 +420,8 @@ class Qwen3Embedder(nn.Module):
             use_cache=False,
         )
 
-        out = torch.stack([output.hidden_states[k] for k in OUTPUT_LAYERS_QWEN3], dim=1)
-        return rearrange(out, "b c l d -> b l (c d)")
+        out = torch.stack([output.hidden_states[k] for k in OUTPUT_LAYERS_QWEN3], dim=1)  # 将多个隐藏状态堆叠在一起
+        return rearrange(out, "b c l d -> b l (c d)")  # 将多个隐藏状态在通道维度上堆叠在一起
 
     def test_txt(self, txt: str) -> bool:
         raise NotImplementedError("Qwen3Embedder does not support text testing")
