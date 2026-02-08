@@ -27,7 +27,7 @@ def scatter_ids(x: Tensor, x_ids: Tensor) -> list[Tensor]:
     """
     x_list = []
     t_coords = []
-    for data, pos in zip(x, x_ids):
+    for data, pos in zip(x, x_ids):  # x [1,4080,128], x_ids [1,4080,4]
         _, ch = data.shape  # noqa: F841
         t_ids = pos[:, 0].to(torch.int64)
         h_ids = pos[:, 1].to(torch.int64)
@@ -39,22 +39,22 @@ def scatter_ids(x: Tensor, x_ids: Tensor) -> list[Tensor]:
         h = torch.max(h_ids) + 1
         w = torch.max(w_ids) + 1
 
-        flat_ids = t_ids_cmpr * w * h + h_ids * w + w_ids
+        flat_ids = t_ids_cmpr * w * h + h_ids * w + w_ids  # 构建出一个长度为t * h * w，数值从0递增至t * h * w - 1的序列
 
         out = torch.zeros((t * h * w, ch), device=data.device, dtype=data.dtype)
         out.scatter_(0, flat_ids.unsqueeze(1).expand(-1, ch), data)
 
         x_list.append(rearrange(out, "(t h w) c -> 1 c t h w", t=t, h=h, w=w))
         t_coords.append(torch.unique(t_ids, sorted=True))
-    return x_list
+    return x_list  # [1,128,1,48,85]
 
 
 def encode_image_refs(ae, img_ctx: list[Image.Image]):
     scale = 10
 
-    if len(img_ctx) > 1:
+    if len(img_ctx) > 1:  # 如果输入图像数量大于1，则限制像素数为1024**2
         limit_pixels = 1024**2
-    elif len(img_ctx) == 1:
+    elif len(img_ctx) == 1:  # 如果输入图像数量为1，则限制像素数为2024**2
         limit_pixels = 2024**2
     else:
         limit_pixels = None
@@ -72,7 +72,7 @@ def encode_image_refs(ae, img_ctx: list[Image.Image]):
         encoded = ae.encode(img[None].cuda())[0]
         encoded_refs.append(encoded)
 
-    # Create time offsets for each reference
+    # Create time offsets for each reference  给每个参考图片添加一个时间偏移
     t_off = [scale + scale * t for t in torch.arange(0, len(encoded_refs))]
     t_off = [t.view(-1) for t in t_off]
 
@@ -94,10 +94,10 @@ def prc_txt(x: Tensor, t_coord: Tensor | None = None) -> tuple[Tensor, Tensor]:
     _l, _ = x.shape  # noqa: F841
 
     coords = {
-        "t": torch.arange(1) if t_coord is None else t_coord,
-        "h": torch.arange(1),  # dummy dimension
-        "w": torch.arange(1),  # dummy dimension
-        "l": torch.arange(_l),
+        "t": torch.arange(1) if t_coord is None else t_coord,  # 时间维度
+        "h": torch.arange(1),  # dummy dimension  height维度
+        "w": torch.arange(1),  # dummy dimension  width维度
+        "l": torch.arange(_l),  # 文本序列的长度维度
     }
     x_ids = torch.cartesian_prod(coords["t"], coords["h"], coords["w"], coords["l"])
     return x, x_ids.to(x.device)
@@ -141,7 +141,7 @@ def listed_wrapper(fn):
 def prc_img(x: Tensor, t_coord: Tensor | None = None) -> tuple[Tensor, Tensor]:
     _, h, w = x.shape  # noqa: F841
     x_coords = {
-        "t": torch.arange(1) if t_coord is None else t_coord,
+        "t": torch.arange(1) if t_coord is None else t_coord,  # 注意此处t_coord是一个如tensor([10])的张量值，只有一个数，所有思维坐标的第一维都是此值
         "h": torch.arange(h),
         "w": torch.arange(w),
         "l": torch.arange(1),
@@ -175,7 +175,7 @@ def center_crop_to_multiple_of_x(
     return resized
 
 
-def cap_pixels(img: Image.Image | list[Image.Image], k):
+def cap_pixels(img: Image.Image | list[Image.Image], k):  # 裁剪图像，使其像素数不超过 k
     if isinstance(img, list):
         return [cap_pixels(_img, k) for _img in img]
     w, h = img.size
@@ -196,9 +196,9 @@ def cap_min_pixels(img: Image.Image | list[Image.Image], max_ar=8, min_sidelengt
     if isinstance(img, list):
         return [cap_min_pixels(_img, max_ar=max_ar, min_sidelength=min_sidelength) for _img in img]
     w, h = img.size
-    if w < min_sidelength or h < min_sidelength:
+    if w < min_sidelength or h < min_sidelength:  # 如果宽度或高度小于最小边长，则抛出错误
         raise ValueError(f"Skipping due to minimal sidelength underschritten h {h} w {w}")
-    if w / h > max_ar or h / w > max_ar:
+    if w / h > max_ar or h / w > max_ar:  # 如果宽度与高度之比大于最大宽高比，则抛出错误
         raise ValueError(f"Skipping due to maximal ar overschritten h {h} w {w}")
     return img
 
@@ -226,7 +226,7 @@ def default_images_prep(
 def default_prep(
     img: Image.Image | list[Image.Image], limit_pixels: int | None, ensure_multiple: int = 16
 ) -> torch.Tensor | list[torch.Tensor]:
-    img_rgb = to_rgb(img)
+    img_rgb = to_rgb(img)  # 将图片转换为rgb
     img_min = cap_min_pixels(img_rgb)  # type: ignore
     if limit_pixels is not None:
         img_cap = cap_pixels(img_min, limit_pixels)  # type: ignore
@@ -324,16 +324,16 @@ def denoise_cfg(
     img_cond_seq: Tensor | None = None,
     img_cond_seq_ids: Tensor | None = None,
 ):
-    img = torch.cat([img, img], dim=0)
-    img_ids = torch.cat([img_ids, img_ids], dim=0)
+    img = torch.cat([img, img], dim=0)  # 因为是cfg推理，故会在batch维度上拼接两张图片，分别用于输入的prompt和无prompt的图片 shape为[2, 4080, 128]
+    img_ids = torch.cat([img_ids, img_ids], dim=0)  # 同上，shape为[2, 4080, 4]
 
     if img_cond_seq is not None:
-        assert img_cond_seq_ids is not None
+        assert img_cond_seq_ids is not None  # 如果条件图片存在，则条件图片的ids也必须存在
         img_cond_seq = torch.cat([img_cond_seq, img_cond_seq], dim=0)
         img_cond_seq_ids = torch.cat([img_cond_seq_ids, img_cond_seq_ids], dim=0)
 
     for t_curr, t_prev in zip(timesteps[:-1], timesteps[1:]):
-        t_vec = torch.full((img.shape[0],), t_curr, dtype=img.dtype, device=img.device)
+        t_vec = torch.full((img.shape[0],), t_curr, dtype=img.dtype, device=img.device)  # 构建时间步嵌入，shape为[2]
 
         img_input = img
         img_input_ids = img_ids
@@ -350,19 +350,19 @@ def denoise_cfg(
             guidance=None,
         )
 
-        if img_cond_seq is not None:
+        if img_cond_seq is not None:  # 如果条件图片存在，则只保留初始的采样图片的预测结果
             pred = pred[:, : img.shape[1]]
 
-        pred_uncond, pred_cond = pred.chunk(2)
-        pred = pred_uncond + guidance * (pred_cond - pred_uncond)
-        pred = torch.cat([pred, pred], dim=0)
+        pred_uncond, pred_cond = pred.chunk(2)  # 将预测结果拆分为无条件和有条件的两部分
+        pred = pred_uncond + guidance * (pred_cond - pred_uncond)  # 进行加权处理 [2,4080,128]
+        pred = torch.cat([pred, pred], dim=0)  # 将无条件和有条件的预测结果拼接在一起 [2,4080,128]
 
-        img = img + (t_prev - t_curr) * pred
+        img = img + (t_prev - t_curr) * pred  # 进行去噪处理 [2,4080,128]
 
     return img.chunk(2)[0]
 
 
-def concatenate_images(
+def concatenate_images(  # 将多张图像水平拼接，并居中对齐
     images: list[Image.Image],
 ) -> Image.Image:
     """

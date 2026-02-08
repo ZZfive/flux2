@@ -3,6 +3,7 @@ import os
 import random
 import shlex
 import sys
+sys.path.insert(0, str((Path(__file__).parent.parent / "src").resolve()))
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
@@ -34,7 +35,7 @@ class Config:
     height: int = 768
     num_steps: int = 50
     guidance: float = 4.0
-    input_images: List[Path] = field(default_factory=list)
+    input_images: List[Path] = field(default_factory=list)  # 输入图像列表
     match_image_size: Optional[int] = None  # Index of input_images to match size from
     upsample_prompt_mode: Literal["none", "local", "openrouter"] = "none"
     openrouter_model: str = "mistralai/pixtral-large-2411"  # OpenRouter model name
@@ -284,7 +285,8 @@ def main(
 
     text_encoder = load_text_encoder(model_name, device=torch_device)
     if "klein" in model_name:
-        mod_and_upsampling_model = load_text_encoder("flux.2-dev")
+        mod_and_upsampling_model = None
+        # mod_and_upsampling_model = load_text_encoder("flux.2-dev")
     else:
         mod_and_upsampling_model = text_encoder
 
@@ -298,7 +300,7 @@ def main(
     # API client will be initialized lazily when needed
     openrouter_api_client: Optional[OpenRouterAPIClient] = None
 
-    cfg = DEFAULTS.copy()
+    cfg = DEFAULTS.copy()  # 复制默认配置用于cfg
 
     # Apply model defaults if not overridden
     defaults = model_info.get("defaults", {})
@@ -415,12 +417,12 @@ def main(
 
         try:
             # Load input images first to potentially match dimensions
-            img_ctx = [Image.open(input_image) for input_image in cfg.input_images]
+            img_ctx = [Image.open(input_image) for input_image in cfg.input_images]  # 加载输入图像
 
             # Apply match_image_size if specified
             width = cfg.width
             height = cfg.height
-            if cfg.match_image_size is not None:
+            if cfg.match_image_size is not None:  # 如果指定了匹配图像尺寸，则使用指定图像尺寸
                 if cfg.match_image_size < 0 or cfg.match_image_size >= len(img_ctx):
                     print(
                         f"  ! match_image_size={cfg.match_image_size} is out of range (0-{len(img_ctx)-1})",
@@ -438,7 +440,7 @@ def main(
             output_name = dir / f"sample_{len(list(dir.glob('*')))}.png"
 
             with torch.no_grad():
-                ref_tokens, ref_ids = encode_image_refs(ae, img_ctx)
+                ref_tokens, ref_ids = encode_image_refs(ae, img_ctx)  # 获取参考图片tokens和对应的ids序列
 
                 if cfg.upsample_prompt_mode == "openrouter":
                     try:
@@ -560,26 +562,26 @@ def main(
 
                 print("Generating with prompt: ", prompt)
 
-                if model_info["guidance_distilled"]:
-                    ctx = text_encoder([prompt]).to(torch.bfloat16)
-                else:
-                    ctx_empty = text_encoder([""]).to(torch.bfloat16)
-                    ctx_prompt = text_encoder([prompt]).to(torch.bfloat16)
-                    ctx = torch.cat([ctx_empty, ctx_prompt], dim=0)
-                ctx, ctx_ids = batched_prc_txt(ctx)
+                if model_info["guidance_distilled"]:  # 表示cfg通过训练蒸馏到了模型内部，cfg失效
+                    ctx = text_encoder([prompt]).to(torch.bfloat16)  # 将文本转换为tokens序列
+                else:  # 非guidance_distilled模型，可以进行cfg
+                    ctx_empty = text_encoder([""]).to(torch.bfloat16)  # 空文本的tokens序列  [1, 512, 7680]
+                    ctx_prompt = text_encoder([prompt]).to(torch.bfloat16)  # 提示词的tokens序列  [1, 512, 7680]
+                    ctx = torch.cat([ctx_empty, ctx_prompt], dim=0)  # [2, 512, 7680]，在batch维度上拼接，cfg本质就是分别对两个prompt都进行推理，然后进行加权处理
+                ctx, ctx_ids = batched_prc_txt(ctx)  # 将文本tokens序列转换为tokens和ids序列，shape分别为[1|2, 512, 7680]和[1|2, 512, 4]
 
                 if cpu_offloading:
                     text_encoder = text_encoder.cpu()
                     torch.cuda.empty_cache()
                     model = model.to(torch_device)
-                    if "klein" in model_name:
-                        mod_and_upsampling_model = mod_and_upsampling_model.cpu()
+                    # if "klein" in model_name:
+                    #     mod_and_upsampling_model = mod_and_upsampling_model.cpu()
 
                 # Create noise
-                shape = (1, 128, height // 16, width // 16)
+                shape = (1, 128, height // 16, width // 16)  # 创建一个符合vae隐空间维度的噪声
                 generator = torch.Generator(device="cuda").manual_seed(seed)
-                randn = torch.randn(shape, generator=generator, dtype=torch.bfloat16, device="cuda")
-                x, x_ids = batched_prc_img(randn)
+                randn = torch.randn(shape, generator=generator, dtype=torch.bfloat16, device="cuda")  # 随机生成噪声
+                x, x_ids = batched_prc_img(randn)  # 将噪声转换为tokens和ids序列
 
                 timesteps = get_schedule(cfg.num_steps, x.shape[1])
                 if model_info["guidance_distilled"]:
@@ -605,7 +607,7 @@ def main(
                         guidance=cfg.guidance,
                         img_cond_seq=ref_tokens,
                         img_cond_seq_ids=ref_ids,
-                    )
+                    )  # [1,4080,128]
                 x = torch.cat(scatter_ids(x, x_ids)).squeeze(2)
                 x = ae.decode(x).float()
                 # x = embed_watermark(x)
@@ -615,15 +617,15 @@ def main(
                     torch.cuda.empty_cache()
                     text_encoder = text_encoder.to(torch_device)
 
-                    if "klein" in model_name:
-                        mod_and_upsampling_model = mod_and_upsampling_model.to(torch_device)
+                    # if "klein" in model_name:
+                    #     mod_and_upsampling_model = mod_and_upsampling_model.to(torch_device)
 
             x = x.clamp(-1, 1)
             x = rearrange(x[0], "c h w -> h w c")
 
             img = Image.fromarray((127.5 * (x + 1.0)).cpu().byte().numpy())
 
-            if mod_and_upsampling_model.test_image(img):
+            if mod_and_upsampling_model is not None and mod_and_upsampling_model.test_image(img):
                 print("Your output has been flagged. Please choose another prompt / input image combination")
             else:
                 exif_data = Image.Exif()
@@ -641,6 +643,12 @@ def main(
 
 
 if __name__ == "__main__":
-    from fire import Fire
+    # from fire import Fire
 
-    Fire(main)
+    # Fire(main)
+    model_name = "flux.2-klein-base-4b"
+    single_eval = True
+    prompt = "a photo of a forest with mist swirling around the tree trunks. The word 'FLUX.2' is painted over it in big, red brush strokes with visible texture"
+    cpu_offloading = True
+    input_images = "/home/dbt/zjy/mll/flux2/assets/i2i_upsample_input.png,/home/dbt/zjy/mll/flux2/assets/teaser_generation.png"
+    main(model_name=model_name, single_eval=single_eval, prompt=prompt, cpu_offloading=cpu_offloading, input_images=input_images)

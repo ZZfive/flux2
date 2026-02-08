@@ -7,6 +7,7 @@ from PIL import Image
 from transformers import (
     AutoModelForCausalLM,
     AutoProcessor,
+    AutoConfig,
     AutoTokenizer,
     Mistral3ForConditionalGeneration,
     pipeline,
@@ -373,14 +374,20 @@ class Qwen3Embedder(nn.Module):
         self,
         model_spec: str,
         device: str | torch.device = "cuda",
+        load_weights: bool = False
     ):
         super().__init__()
 
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_spec,
-            torch_dtype=None,
-            device_map=str(device),
-        )
+        if load_weights:
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_spec,
+                torch_dtype=None,
+                device_map=str(device),
+            )
+        else:
+            config = AutoConfig.from_pretrained(model_spec)
+            self.model = AutoModelForCausalLM.from_config(config)
+            self.model.to(device)
 
         self.tokenizer = AutoTokenizer.from_pretrained(model_spec)
         self.max_length = MAX_LENGTH
@@ -410,8 +417,8 @@ class Qwen3Embedder(nn.Module):
             all_input_ids.append(model_inputs["input_ids"])
             all_attention_masks.append(model_inputs["attention_mask"])
 
-        input_ids = torch.cat(all_input_ids, dim=0).to(self.model.device)
-        attention_mask = torch.cat(all_attention_masks, dim=0).to(self.model.device)
+        input_ids = torch.cat(all_input_ids, dim=0).to(self.model.device)  # [1, 512] 此处的512是由self.max_length决定的
+        attention_mask = torch.cat(all_attention_masks, dim=0).to(self.model.device)  # [1, 512]
 
         output = self.model(
             input_ids=input_ids,
@@ -438,4 +445,4 @@ def load_mistral_small_embedder(device: str | torch.device = "cuda") -> Mistral3
 
 
 def load_qwen3_embedder(variant: str, device: str | torch.device = "cuda"):
-    return Qwen3Embedder(model_spec=f"Qwen/Qwen3-{variant}-FP8", device=device)
+    return Qwen3Embedder(model_spec=f"Qwen/Qwen3-{variant}", device=device)

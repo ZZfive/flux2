@@ -332,7 +332,7 @@ class AutoEncoder(nn.Module):  # 自动编码器
             pi=self.ps[0],
             pj=self.ps[1],
         )  # [1, 128, 16, 16] -> [1, 32, 32, 32]
-        dec = self.decoder(z)
+        dec = self.decoder(z)  # 真实采样[1, 3, 768, 1360]
         return dec
 
 

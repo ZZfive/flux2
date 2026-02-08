@@ -113,19 +113,19 @@ class Flux2(nn.Module):
 
     def forward(
         self,
-        x: Tensor,
-        x_ids: Tensor,
-        timesteps: Tensor,
-        ctx: Tensor,
-        ctx_ids: Tensor,
-        guidance: Tensor | None,
+        x: Tensor,  # 图片的特征序列
+        x_ids: Tensor,  # 图片的ids序列
+        timesteps: Tensor,  # 时间步嵌入
+        ctx: Tensor,  # 文本输入的特征序列
+        ctx_ids: Tensor,  # 文本输入的ids序列
+        guidance: Tensor | None,  # 引导嵌入
     ):
         num_txt_tokens = ctx.shape[1]
 
-        timestep_emb = timestep_embedding(timesteps, 256)  # 构建时间步嵌入
-        vec = self.time_in(timestep_emb)  # 将时间步嵌入映射到隐藏维度
+        timestep_emb = timestep_embedding(timesteps, 256)  # 构建时间步嵌入  [batch, 256]
+        vec = self.time_in(timestep_emb)  # 将时间步嵌入映射到隐藏维度 [batch, 3072]，后面的特征维度与模型类型相关，3072是Klein4B的隐藏维度
         if self.use_guidance_embed:  # 如果使用引导嵌入，则添加引导嵌入层
-            guidance_emb = timestep_embedding(guidance, 256)  # 构建引导嵌入
+            guidance_emb = timestep_embedding(guidance, 256)  # 构建引导嵌入 [batch, 256]
             vec = vec + self.guidance_in(guidance_emb)  # 将引导嵌入添加到vec
 
         # 基于vec构建双流和单流的调制项
@@ -133,11 +133,11 @@ class Flux2(nn.Module):
         double_block_mod_txt = self.double_stream_modulation_txt(vec)
         single_block_mod, _ = self.single_stream_modulation(vec)
 
-        img = self.img_in(x)  # 将输入图像映射到隐藏维度
-        txt = self.txt_in(ctx)  # 将输入文本映射到隐藏维度
+        img = self.img_in(x)  # 将输入图像映射到隐藏维度 [batch, 4080, 3072]
+        txt = self.txt_in(ctx)  # 将输入文本映射到隐藏维度 [batch, 512, 3072]
 
-        pe_x = self.pe_embedder(x_ids)
-        pe_ctx = self.pe_embedder(ctx_ids)
+        pe_x = self.pe_embedder(x_ids)  # 基于图片的ids构建位置编码  [2,1,4080,64,2,2]
+        pe_ctx = self.pe_embedder(ctx_ids)  # 基于文本的ids构建位置编码  [2,1,512,64,2,2]
 
         for block in self.double_blocks:  # 进行双流块的处理
             img, txt = block(
@@ -149,8 +149,8 @@ class Flux2(nn.Module):
                 double_block_mod_txt,
             )
 
-        img = torch.cat((txt, img), dim=1)  # 将文本和图像拼接在一起
-        pe = torch.cat((pe_ctx, pe_x), dim=2)  # 将文本和图像的位置编码拼接在一起
+        img = torch.cat((txt, img), dim=1)  # 将文本和图像拼接在一起 [2,4592,3072]
+        pe = torch.cat((pe_ctx, pe_x), dim=2)  # 将文本和图像的位置编码拼接在一起 [2,4592,3072]
 
         for i, block in enumerate(self.single_blocks):  # 进行单流块的处理
             img = block(
@@ -159,10 +159,10 @@ class Flux2(nn.Module):
                 single_block_mod,
             )
 
-        img = img[:, num_txt_tokens:, ...]  # 因为文本和图像拼接在一起，所以最终图片部分在后面
+        img = img[:, num_txt_tokens:, ...]  # 因为文本和图像拼接在一起，所以最终图片部分在后面 [2,4080,3072]
 
         img = self.final_layer(img, vec)  # 进行最终的输出
-        return img
+        return img  # [2,4080,128]
 
 
 class SelfAttention(nn.Module):
@@ -265,7 +265,7 @@ class SingleStreamBlock(nn.Module):
         mod: tuple[Tensor, Tensor],
     ) -> Tensor:
         mod_shift, mod_scale, mod_gate = mod
-        x_mod = (1 + mod_scale) * self.pre_norm(x) + mod_shift
+        x_mod = (1 + mod_scale) * self.pre_norm(x) + mod_shift  # [2,4592,3072]
 
         qkv, mlp = torch.split(
             self.linear1(x_mod),
@@ -274,12 +274,12 @@ class SingleStreamBlock(nn.Module):
         )
 
         q, k, v = rearrange(qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
-        q, k = self.norm(q, k, v)
+        q, k = self.norm(q, k, v)  # [2,24,4592,128]
 
-        attn = attention(q, k, v, pe)  # 进行带有位置编码的注意力计算
+        attn = attention(q, k, v, pe)  # 进行带有位置编码的注意力计算 [2,4592,3072]
 
         # compute activation in mlp stream, cat again and run second linear layer
-        output = self.linear2(torch.cat((attn, self.mlp_act(mlp)), 2))
+        output = self.linear2(torch.cat((attn, self.mlp_act(mlp)), 2))  # [2,4592,3072]
         return x + mod_gate * output  # 进行残差连接和门控激活
 
 
@@ -339,20 +339,20 @@ class DoubleStreamBlock(nn.Module):
     ) -> tuple[Tensor, Tensor]:
         img_mod1, img_mod2 = mod_img
         txt_mod1, txt_mod2 = mod_txt
-
+        # 以下每个的shape都是[batch, 1, 3072]，如[2, 1, 3072]
         img_mod1_shift, img_mod1_scale, img_mod1_gate = img_mod1
         img_mod2_shift, img_mod2_scale, img_mod2_gate = img_mod2
         txt_mod1_shift, txt_mod1_scale, txt_mod1_gate = txt_mod1
         txt_mod2_shift, txt_mod2_scale, txt_mod2_gate = txt_mod2
 
         # prepare image for attention
-        img_modulated = self.img_norm1(img)
+        img_modulated = self.img_norm1(img)  # 进行图片分支的归一化
         img_modulated = (1 + img_mod1_scale) * img_modulated + img_mod1_shift
 
         # 进行图片分支的注意力计算
         img_qkv = self.img_attn.qkv(img_modulated)
         img_q, img_k, img_v = rearrange(img_qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
-        img_q, img_k = self.img_attn.norm(img_q, img_k, img_v)
+        img_q, img_k = self.img_attn.norm(img_q, img_k, img_v)  # [2,24,4080,128]
 
         # prepare txt for attention
         txt_modulated = self.txt_norm1(txt)
@@ -361,29 +361,29 @@ class DoubleStreamBlock(nn.Module):
         # 进行文本分支的注意力计算
         txt_qkv = self.txt_attn.qkv(txt_modulated)
         txt_q, txt_k, txt_v = rearrange(txt_qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
-        txt_q, txt_k = self.txt_attn.norm(txt_q, txt_k, txt_v)
+        txt_q, txt_k = self.txt_attn.norm(txt_q, txt_k, txt_v)  # [2,24,512,128]
 
         # 将文本和图片的query、key、value拼接在一起
-        q = torch.cat((txt_q, img_q), dim=2)
-        k = torch.cat((txt_k, img_k), dim=2)
-        v = torch.cat((txt_v, img_v), dim=2)
+        q = torch.cat((txt_q, img_q), dim=2)  # [2,24,4592,128]
+        k = torch.cat((txt_k, img_k), dim=2)  # [2,24,4592,128]
+        v = torch.cat((txt_v, img_v), dim=2)  # [2,24,4592,128]
 
-        pe = torch.cat((pe_ctx, pe), dim=2)  # 将作为条件的图片上下文为rope旋转矩阵，与当前图片的位置编码拼接在一起
-        attn = attention(q, k, v, pe)  # 进行带有位置编码的注意力计算
+        pe = torch.cat((pe_ctx, pe), dim=2)  # 将作为条件的图片上下文为rope旋转矩阵，与当前图片的位置编码拼接在一起  [2,1,4592,64,2,2]
+        attn = attention(q, k, v, pe)  # 进行带有位置编码的注意力计算  [2,4592,3072]
         txt_attn, img_attn = attn[:, : txt_q.shape[2]], attn[:, txt_q.shape[2] :]  # 将注意力分数拆分为文本和图片两个部分
 
         # calculate the img blocks  构建输入到下一个双流块的图像特征，包括残差连接和MLP层
-        img = img + img_mod1_gate * self.img_attn.proj(img_attn)
+        img = img + img_mod1_gate * self.img_attn.proj(img_attn)  # [2,4080,3072]
         img = img + img_mod2_gate * self.img_mlp(
             (1 + img_mod2_scale) * (self.img_norm2(img)) + img_mod2_shift
-        )
+        )  # [2,4080,3072]
 
         # calculate the txt blocks  构建输入到下一个双流块的文本特征，包括残差连接和MLP层
         txt = txt + txt_mod1_gate * self.txt_attn.proj(txt_attn)
         txt = txt + txt_mod2_gate * self.txt_mlp(
             (1 + txt_mod2_scale) * (self.txt_norm2(txt)) + txt_mod2_shift
         )
-        return img, txt
+        return img, txt  # [2,4080,3072], [2,512,3072]
 
 
 class MLPEmbedder(nn.Module):
@@ -429,7 +429,7 @@ def timestep_embedding(t: Tensor, dim, max_period=10000, time_factor: float = 10
         t.device
     )
 
-    args = t[:, None].float() * freqs[None]
+    args = t[:, None].float() * freqs[None]  # 将时间步嵌入与频率相乘，得到位置编码
     embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
     if dim % 2:  # 如果维度不是2的倍数，补充一个零向量
         embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)

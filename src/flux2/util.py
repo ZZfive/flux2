@@ -84,11 +84,12 @@ def load_flow_model(model_name: str, debug_mode: bool = False, device: str | tor
         else:
             # download from huggingface
             try:
-                weight_path = huggingface_hub.hf_hub_download(
-                    repo_id=config["repo_id"],
-                    filename=config["filename"],
-                    repo_type="model",
-                )
+                # weight_path = huggingface_hub.hf_hub_download(
+                #     repo_id=config["repo_id"],
+                #     filename=config["filename"],
+                #     repo_type="model",
+                # )
+                pass
             except huggingface_hub.errors.RepositoryNotFoundError:
                 print(
                     f"Failed to access the model repository. Please check your internet "
@@ -98,12 +99,14 @@ def load_flow_model(model_name: str, debug_mode: bool = False, device: str | tor
                 sys.exit(1)
 
     if not debug_mode:
-        with torch.device("meta"):
-            model = Flux2(FLUX2_MODEL_INFO[model_name.lower()]["params"]).to(torch.bfloat16)
-        print(f"Loading {weight_path} for the FLUX.2 weights")
-        sd = load_sft(weight_path, device=str(device))
-        model.load_state_dict(sd, strict=True, assign=True)
-        return model.to(device)
+        # with torch.device("meta"):
+        #     model = Flux2(FLUX2_MODEL_INFO[model_name.lower()]["params"]).to(torch.bfloat16)
+        # print(f"Loading {weight_path} for the FLUX.2 weights")
+        # sd = load_sft(weight_path, device=str(device))
+        # model.load_state_dict(sd, strict=True, assign=True)
+        # return model.to(device)
+        with torch.device(device):
+            return Flux2(FLUX2_MODEL_INFO[model_name.lower()]["params"]).to(torch.bfloat16)
     else:
         with torch.device(device):
             return Flux2(FLUX2_MODEL_INFO[model_name.lower()]["params"]).to(torch.bfloat16)
@@ -123,11 +126,12 @@ def load_ae(model_name: str, device: str | torch.device = "cuda") -> AutoEncoder
     else:
         # download from huggingface
         try:
-            weight_path = huggingface_hub.hf_hub_download(
-                repo_id=config["repo_id"],
-                filename=config["filename_ae"],
-                repo_type="model",
-            )
+            # weight_path = huggingface_hub.hf_hub_download(
+            #     repo_id=config["repo_id"],
+            #     filename=config["filename_ae"],
+            #     repo_type="model",
+            # )
+            pass
         except huggingface_hub.errors.RepositoryNotFoundError:
             print(
                 f"Failed to access the model repository. Please check your internet "
@@ -138,12 +142,13 @@ def load_ae(model_name: str, device: str | torch.device = "cuda") -> AutoEncoder
 
     if isinstance(device, str):
         device = torch.device(device)
-    with torch.device("meta"):
-        ae = AutoEncoder(AutoEncoderParams())
+    # with torch.device("meta"):
+    #     ae = AutoEncoder(AutoEncoderParams())
 
-    print(f"Loading {weight_path} for the AutoEncoder weights")
-    sd = load_sft(weight_path, device=str(device))
-    ae.load_state_dict(sd, strict=True, assign=True)
+    # print(f"Loading {weight_path} for the AutoEncoder weights")
+    # sd = load_sft(weight_path, device=str(device))
+    # ae.load_state_dict(sd, strict=True, assign=True)
+    ae = AutoEncoder(AutoEncoderParams())
     return ae.to(device)
 
 
